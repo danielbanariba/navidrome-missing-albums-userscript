@@ -1,0 +1,104 @@
+# Navidrome — Show Missing Albums (MusicBrainz)
+
+A userscript for [Navidrome](https://www.navidrome.org/) that overlays greyed-out
+placeholder tiles for studio albums missing from your library, sourced from
+[MusicBrainz](https://musicbrainz.org/) and [Cover Art Archive](https://coverartarchive.org/).
+
+![Demo screenshot](https://github.com/user-attachments/assets/13dddc52-63cc-4ca0-a558-d99642812572)
+
+## Why
+
+Navidrome shows the albums you have. This userscript adds the albums you *don't* have
+yet — so when an artist drops something new, or you discover an old release you
+missed, it shows up greyed out on the artist page next to everything else.
+
+It runs entirely client-side. No Navidrome modification, no server plugin, no
+account needed beyond your existing Navidrome login.
+
+## Status
+
+This is a stop-gap until [Navidrome's plugin system](https://github.com/navidrome/navidrome/tree/master/plugins)
+exposes the missing capability for a proper server-side implementation
+(tracked in [navidrome/navidrome#5106](https://github.com/navidrome/navidrome/issues/5106)).
+
+## Install
+
+1. Install [Tampermonkey](https://www.tampermonkey.net/) (or Greasemonkey, Violentmonkey).
+2. Click the install link:
+   - **[Install from raw GitHub](https://raw.githubusercontent.com/danielbanariba/navidrome-missing-albums-userscript/main/navidrome-missing-albums.user.js)**
+   - Or via [Greasy Fork](https://greasyfork.org/) once published.
+3. Open your Navidrome instance and go to any artist page. Greyed-out tiles for
+   missing studio albums appear inline with your existing albums, sorted by year.
+
+The script auto-detects whether the page is Navidrome (looks for a `token` in
+localStorage and a Navidrome-shaped hash route), so the broad `@match *://*/*`
+won't trip on unrelated sites.
+
+## Behaviour
+
+- **Studio albums only.** Filters out compilations, live albums, remixes,
+  soundtracks, DJ-mixes, mixtapes, demos, interviews, audiobooks, audio dramas,
+  and spokenword. Tweak `EXCLUDED_SECONDARY` in the script to taste.
+- **Rate-limit respectful.** MusicBrainz API enforces 1 req/sec; the script
+  waits 1.1s between calls and caches everything in `localStorage` for 7 days.
+- **Cover art.** Fetched from the Cover Art Archive at the release-group level.
+  Falls back to a music-note placeholder when CAA has no image.
+- **Non-interactive tiles.** Greyed tiles can't be clicked or played — they're
+  visual-only with a "Not in library" badge.
+- **Year-sorted insert.** Missing tiles slot into the existing chronological
+  grid order.
+
+## Configuration
+
+The script ships with sensible defaults. To change behaviour, edit these
+constants at the top:
+
+```js
+const CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
+const EXCLUDED_SECONDARY = new Set([...]);  // release-group secondary types to skip
+```
+
+## Limitations
+
+- **MusicBrainz coverage.** Works best for artists with complete MusicBrainz
+  release-group data. Lesser-known artists may have gaps.
+- **Name matching.** Match is by normalized title (lowercased, parens stripped,
+  punctuation removed). Heavily-renamed releases (e.g. expanded editions with
+  different titles) can produce false positives.
+- **MUI v4 dependent.** Targets Navidrome's current Material UI v4 grid
+  classes. If/when Navidrome migrates to MUI v5+, the DOM selectors need updating.
+- **No artist disambiguation UI.** If two artists share a name, the script
+  picks the first match with score ≥90 from MusicBrainz. Override by ensuring
+  the artist has a `mbzArtistId` set in Navidrome's metadata.
+
+## Cache
+
+Data lives in `localStorage` under the key `nd-missing-albums-cache`. To
+force a refresh, clear that key (DevTools → Application → Local Storage),
+or wait 7 days for natural expiry.
+
+## Privacy
+
+The script makes requests to:
+- Your Navidrome instance (already authenticated via your normal session)
+- `https://musicbrainz.org/ws/2/` (anonymous, public API)
+- `https://coverartarchive.org/release-group/<mbid>/front-250` (anonymous,
+  public)
+
+No data leaves your browser apart from the MusicBrainz queries listed above.
+
+## Contributing
+
+Issues and pull requests welcome. Run the script against a real Navidrome
+instance — there's no automated test suite.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## See also
+
+- [Navidrome](https://www.navidrome.org/) — the music server this targets
+- [navidrome/navidrome#5106](https://github.com/navidrome/navidrome/issues/5106) — the upstream feature request this works around
+- [MusicBrainz](https://musicbrainz.org/) — the data source
+- [Cover Art Archive](https://coverartarchive.org/) — the cover-art source
