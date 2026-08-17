@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.0.0
+// @version      1.1.0
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -24,6 +24,13 @@
   const CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
   const MARKER = "data-missing-album";
   const LOG_PREFIX = "[Navidrome Missing Albums]";
+
+  // Cover Art Archive 307-redirects to archive.org, whose download layer
+  // intermittently answers 5xx or drops the connection. One failure is not
+  // proof the cover is absent, so retry before falling back.
+  const COVER_RETRIES = 3;
+  const COVER_RETRY_BASE_MS = 800;
+  const COVER_RETRY_JITTER_MS = 400;
 
   const EXCLUDED_SECONDARY = new Set([
     "Compilation", "Live", "Remix", "Soundtrack", "DJ-mix",
@@ -188,6 +195,34 @@
         "</svg>"
     );
 
+  // Point an <img> at the Cover Art Archive, retrying transient upstream
+  // failures with exponential backoff plus jitter before showing the
+  // placeholder. The retry query parameter is ignored by CAA but changes the
+  // URL, so the browser reissues the request instead of replaying the cached
+  // failure. Jitter keeps concurrent tiles from retrying in lockstep.
+  function setCoverWithRetry(img, album) {
+    const url = `${CAA_BASE}/release-group/${album.mbid}/front-250`;
+    let attempt = 0;
+
+    img.alt = album.title;
+    img.onerror = function () {
+      if (attempt >= COVER_RETRIES) {
+        this.onerror = null;
+        this.src = PLACEHOLDER_SVG;
+        return;
+      }
+      attempt++;
+      const delay =
+        COVER_RETRY_BASE_MS * Math.pow(2, attempt - 1) +
+        Math.random() * COVER_RETRY_JITTER_MS;
+      setTimeout(() => {
+        if (!img.isConnected) return;
+        img.src = `${url}?retry=${attempt}`;
+      }, delay);
+    };
+    img.src = url;
+  }
+
   function findGrid() {
     return document.querySelector('[class*="MuiGridList-root"]');
   }
@@ -229,14 +264,7 @@
 
     // Replace cover art
     const img = tile.querySelector("img");
-    if (img) {
-      img.src = `${CAA_BASE}/release-group/${album.mbid}/front-250`;
-      img.alt = album.title;
-      img.onerror = function () {
-        this.onerror = null;
-        this.src = PLACEHOLDER_SVG;
-      };
-    }
+    if (img) setCoverWithRetry(img, album);
 
     // Replace album name (the second <a> with /album/ href is the title link)
     const links = tile.querySelectorAll('a[href*="/album/"]');
@@ -422,7 +450,7 @@
     if (!isNavidrome()) return;
 
     loadCache();
-    console.log(LOG_PREFIX, "v1.0.0 ready");
+    console.log(LOG_PREFIX, "v1.1.0 ready");
 
     const style = document.createElement("style");
     style.textContent = `

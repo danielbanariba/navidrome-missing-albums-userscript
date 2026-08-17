@@ -42,7 +42,10 @@ won't trip on unrelated sites.
 - **Rate-limit respectful.** MusicBrainz API enforces 1 req/sec; the script
   waits 1.1s between calls and caches everything in `localStorage` for 7 days.
 - **Cover art.** Fetched from the Cover Art Archive at the release-group level.
-  Falls back to a music-note placeholder when CAA has no image.
+  CAA redirects to archive.org, whose download layer intermittently answers
+  `5xx` or drops the connection, so a failed load is retried up to
+  `COVER_RETRIES` times with exponential backoff and jitter before the
+  music-note placeholder is shown.
 - **Non-interactive tiles.** Greyed tiles can't be clicked or played — they're
   visual-only with a "Not in library" badge.
 - **Year-sorted insert.** Missing tiles slot into the existing chronological
@@ -56,6 +59,9 @@ constants at the top:
 ```js
 const CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
 const EXCLUDED_SECONDARY = new Set([...]);  // release-group secondary types to skip
+const COVER_RETRIES = 3;                    // cover-art retries before placeholder
+const COVER_RETRY_BASE_MS = 800;            // first backoff, doubles each retry
+const COVER_RETRY_JITTER_MS = 400;          // random spread, avoids lockstep retries
 ```
 
 ## Limitations
