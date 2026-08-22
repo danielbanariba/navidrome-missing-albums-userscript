@@ -169,16 +169,30 @@
   function normalize(name) {
     return name
       .toLowerCase()
-      .replace(/\s*\(.*?\)\s*/g, "")
-      .replace(/\s*\[.*?\]\s*/g, "")
-      .replace(/[^\w\s]/g, "")
+      .replace(/\s*\(.*?\)\s*/g, " ")
+      .replace(/\s*\[.*?\]\s*/g, " ")
+      // Replaced with a space rather than deleted: dropping the hyphen turned
+      // "Revenge-10th" into "revenge10th", which then no longer starts with
+      // "revenge" — exactly what the prefix match below looks for.
+      .replace(/[^\w\s]+/g, " ")
       .replace(/\s+/g, " ")
       .trim();
   }
 
   function findMissing(localAlbums, mbAlbums) {
-    const local = new Set(localAlbums.map((a) => normalize(a.name)));
-    return mbAlbums.filter((a) => !local.has(normalize(a.title)));
+    const local = localAlbums.map((a) => normalize(a.name));
+
+    // A local copy often carries an edition suffix the catalogue title does not
+    // — "…Revenge-10th Anniversary Edition" against plain "…Revenge" — and those
+    // suffixes are not always parenthesised, so a prefix match is needed. Only
+    // in that direction: a plain local title must not satisfy a longer, distinct
+    // catalogue entry.
+    const owned = (title) => {
+      const key = normalize(title);
+      return local.some((have) => have === key || have.startsWith(key + " "));
+    };
+
+    return mbAlbums.filter((a) => !owned(a.title));
   }
 
   // ── DOM ──────────────────────────────────────────────────
