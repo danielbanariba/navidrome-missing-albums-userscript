@@ -64,6 +64,31 @@ const COVER_RETRY_BASE_MS = 800;            // first backoff, doubles each retry
 const COVER_RETRY_JITTER_MS = 400;          // random spread, avoids lockstep retries
 ```
 
+## Requesting a missing album (optional)
+
+Paired with [navidrome-lidarr-bridge][bridge], each placeholder gets a
+**Request** button over its cover that asks Lidarr to monitor the album and go
+looking for it.
+
+The bridge is probed once per page. When it does not answer — which is the case
+for anyone not running it — no button is drawn and the tiles behave exactly as
+before. Nothing else changes.
+
+Both sides key on the MusicBrainz release-group id these tiles already carry:
+Lidarr stores it as `foreignAlbumId`, so no title matching is involved in the
+request itself.
+
+The bridge is reached at `http://<host>:8687` when the page is Navidrome's own
+port, and at a same-origin `/ndlb` prefix otherwise. That second case is not a
+preference: once a reverse proxy terminates TLS, a page served over HTTPS cannot
+call plain `http://host:8687` at all, because the browser blocks it as mixed
+content. Set `window.__NDLB_BASE` to override.
+
+A `404` on the button means Lidarr has not imported that artist yet, which the
+button reports as *Monitor artist first* rather than a generic failure.
+
+[bridge]: https://github.com/danielbanariba/navidrome-lidarr-bridge
+
 ## Limitations
 
 - **MusicBrainz coverage.** Works best for artists with complete MusicBrainz
