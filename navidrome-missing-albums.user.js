@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.1.0
-// @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library.
+// @version      1.2.0
+// @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
 // @run-at       document-idle
@@ -37,6 +37,39 @@
     "Mixtape/Street", "Demo", "Interview", "Audiobook",
     "Audio drama", "Spokenword",
   ]);
+
+  // ── Optional: request a missing album from Lidarr ─────────
+  //
+  // https://github.com/danielbanariba/navidrome-lidarr-bridge exposes Lidarr at
+  // POST /request, keyed by the same MusicBrainz release-group id these tiles
+  // already carry — Lidarr stores it as foreignAlbumId — so no translation is
+  // needed. The bridge is probed once; when it is absent the tiles behave
+  // exactly as before and nothing is drawn.
+  //
+  // Navidrome on its own port has no proxy to mount a path on, so the bridge is
+  // reached there by port. Behind a reverse proxy the same-origin prefix is the
+  // only option that works: a page served over HTTPS cannot call plain
+  // http://host:8687, because the browser blocks it as mixed content.
+  const BRIDGE_BASE =
+    window.__NDLB_BASE ||
+    (location.port === "4533"
+      ? `${location.protocol}//${location.hostname}:8687`
+      : "/ndlb");
+
+  let bridgeReady = null; // null = not probed yet, then true/false
+
+  async function probeBridge() {
+    if (bridgeReady !== null) return bridgeReady;
+    try {
+      const res = await fetch(`${BRIDGE_BASE}/status`, { method: "GET" });
+      // A failing bridge still answers 503 with a body, and a request would
+      // still be accepted, so anything that replies counts as present.
+      bridgeReady = res.status < 500 || res.status === 503;
+    } catch (_) {
+      bridgeReady = false;
+    }
+    return bridgeReady;
+  }
 
   // ── Self-detect: only run on pages that look like Navidrome ──
   function isNavidrome() {
@@ -311,20 +344,109 @@
     const tileBar = tile.querySelector('[class*="MuiGridListTileBar-root"]');
     if (tileBar) tileBar.remove();
 
-    // "Not in library" badge
+    // "Not in library" badge. Top-left, so it does not sit under the request
+    // button when the bridge is present.
     const imgWrapper = img?.closest("div");
     if (imgWrapper) {
       imgWrapper.style.position = "relative";
       const badge = document.createElement("div");
       badge.style.cssText =
-        "position:absolute;bottom:6px;left:6px;background:rgba(0,0,0,0.75);" +
-        "color:#999;font-size:10px;padding:2px 8px;border-radius:3px;" +
-        "pointer-events:none;letter-spacing:0.5px;";
+        "position:absolute;top:6px;left:6px;background:rgba(0,0,0,0.72);" +
+        "color:#b9bec7;font-size:9px;padding:2px 7px;border-radius:10px;" +
+        "pointer-events:none;letter-spacing:0.6px;text-transform:uppercase;";
       badge.textContent = "Not in library";
       imgWrapper.appendChild(badge);
     }
 
+    // Request button, only when the bridge answered the probe.
+    if (tileDiv) {
+      probeBridge().then((ready) => {
+        if (!ready) return;
+        tileDiv.style.position = "relative";
+        const overlay = createRequestOverlay(album);
+        tileDiv.appendChild(overlay);
+        tile.addEventListener("mouseenter", () => (overlay.style.opacity = "1"));
+        tile.addEventListener("mouseleave", () => {
+          if (!overlay.dataset.pinned) overlay.style.opacity = "0";
+        });
+      });
+    }
+
     return tile;
+  }
+
+  // Hangs off the tile wrapper rather than the cover container: that container
+  // carries grayscale and reduced opacity, and children inherit both. The cover
+  // is meant to look faded; the button is not. Sized with aspect-ratio so it
+  // covers the square art without reaching into the title row, and without
+  // measuring pixels that a resize would invalidate.
+  function createRequestOverlay(album) {
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:absolute;top:0;left:0;width:100%;aspect-ratio:1;z-index:2;" +
+      "display:flex;align-items:center;justify-content:center;" +
+      "background:linear-gradient(180deg,rgba(0,0,0,0) 35%,rgba(0,0,0,0.55) 100%);" +
+      "opacity:0;transition:opacity .18s ease;pointer-events:none;";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Request";
+    btn.style.cssText =
+      "pointer-events:auto;cursor:pointer;font:600 11px/1 system-ui,sans-serif;" +
+      "letter-spacing:.4px;padding:7px 16px;border-radius:999px;" +
+      "border:1px solid rgba(255,255,255,.25);color:#fff;" +
+      "background:rgba(28,32,38,.92);backdrop-filter:blur(2px);" +
+      "box-shadow:0 2px 10px rgba(0,0,0,.45);transition:background .15s;";
+    btn.addEventListener("mouseenter", () => {
+      if (!btn.disabled) btn.style.background = "rgba(48,54,64,.95)";
+    });
+    btn.addEventListener("mouseleave", () => {
+      if (!btn.disabled) btn.style.background = "rgba(28,32,38,.92)";
+    });
+
+    // An outcome has to stay readable after the pointer leaves the tile.
+    const settle = (text, ok) => {
+      btn.textContent = text;
+      btn.disabled = true;
+      btn.style.cursor = "default";
+      btn.style.borderColor = "transparent";
+      btn.style.background = ok ? "rgba(46,125,79,.95)" : "rgba(142,59,52,.95)";
+      overlay.dataset.pinned = "1";
+      overlay.style.opacity = "1";
+    };
+
+    btn.addEventListener("click", async (e) => {
+      // Every link in the tile has its clicks cancelled; this button is the
+      // one thing on it that is meant to be clickable.
+      e.preventDefault();
+      e.stopPropagation();
+      btn.disabled = true;
+      btn.textContent = "Requesting…";
+      overlay.dataset.pinned = "1";
+      try {
+        const res = await fetch(`${BRIDGE_BASE}/request`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mbid: album.mbid }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          settle("Requested ✓", true);
+        } else {
+          // 404 means Lidarr has not imported this artist yet, which is a
+          // different problem from the album not existing.
+          settle(res.status === 404 ? "Monitor artist first" : "Failed", false);
+          btn.title = data.error || `HTTP ${res.status}`;
+        }
+      } catch (err) {
+        settle("Failed", false);
+        btn.title = String(err && err.message ? err.message : err);
+        console.warn(LOG_PREFIX, "request failed", err);
+      }
+    });
+
+    overlay.appendChild(btn);
+    return overlay;
   }
 
   function insertByYear(grid, tile, album) {
