@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.5.0
+// @version      1.5.1
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -19,6 +19,12 @@
 (function () {
   "use strict";
 
+  // Read from the header rather than repeated by hand, which is how the banner
+  // came to announce 1.1.0 from a 1.5.0 script.
+  // typeof, not a plain read: an undeclared identifier throws rather than
+  // reading as undefined, and this script also runs injected by hand.
+  const VERSION =
+    (typeof GM_info !== "undefined" && GM_info?.script?.version) || "dev";
   const MB_BASE = "https://musicbrainz.org/ws/2";
   // Each candidate costs one discography request, so a name hundreds of bands
   // share is not worth exhausting; the right one is near the top of the results.
@@ -152,10 +158,19 @@
     return ndFetch(`/api/artist/${id}`);
   }
 
+  // Navidrome takes its filters as plain query parameters and ignores a JSON
+  // `filter` object without complaining — so this asked for one artist's albums
+  // and silently got the entire library: 1971 records for a band with four,
+  // starting with a release by somebody else entirely.
+  //
+  // That was wrong before and merely hid missing albums whose titles another
+  // band happened to share. It matters much more now that identity is decided
+  // by what the library holds, because a candidate could be confirmed by a
+  // record belonging to a different artist.
   function getArtistAlbums(id) {
-    const filter = encodeURIComponent(JSON.stringify({ artist_id: id }));
     return ndFetch(
-      `/api/album?filter=${filter}&sort=["max_year","ASC"]&range=[0,499]`
+      `/api/album?artist_id=${encodeURIComponent(id)}` +
+        `&_sort=max_year&_order=ASC&_start=0&_end=500`
     );
   }
 
@@ -719,7 +734,7 @@
     if (!isNavidrome()) return;
 
     loadCache();
-    console.log(LOG_PREFIX, "v1.1.0 ready");
+    console.log(LOG_PREFIX, `v${VERSION} ready`);
 
     const style = document.createElement("style");
     style.textContent = `
