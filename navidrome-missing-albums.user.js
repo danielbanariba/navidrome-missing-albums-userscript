@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.4.0
+// @version      1.5.0
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -20,6 +20,9 @@
   "use strict";
 
   const MB_BASE = "https://musicbrainz.org/ws/2";
+  // Each candidate costs one discography request, so a name hundreds of bands
+  // share is not worth exhausting; the right one is near the top of the results.
+  const MAX_CANDIDATES = 6;
   const CAA_BASE = "https://coverartarchive.org";
   const CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
   const MARKER = "data-missing-album";
@@ -73,11 +76,10 @@
 
   async function bridgeMissing(artistId) {
     // The bridge answers a better question than this script can ask alone. It
-    // identifies the artist by matching the library's own albums against each
-    // candidate's catalogue, which searching MusicBrainz by name cannot do:
-    // ten artists are called "Delirium" and the search returns the wrong one
-    // first. It also widens the result with Discogs, which lists records
-    // MusicBrainz has never heard of.
+    // widens the discography with Discogs, which lists records MusicBrainz has
+    // never heard of, and it knows which albums Lidarr can actually be sent
+    // after. It identifies the artist the same way this script now does, by
+    // matching the library's own albums against each candidate's catalogue.
     //
     // Returning null means "no better answer available", and the MusicBrainz
     // path below runs unchanged — which is what happens for anyone not running
@@ -113,12 +115,14 @@
   }
 
   // ── Cache ────────────────────────────────────────────────
-  let cache = { artists: {}, albums: {}, ts: {} };
+  let cache = { albums: {}, ts: {} };
 
   function loadCache() {
     try {
       const raw = localStorage.getItem("nd-missing-albums-cache");
-      if (raw) cache = JSON.parse(raw);
+      // Merged rather than assigned: a cache written by an older version is
+      // missing keys this one reads, and reading through a hole throws.
+      if (raw) cache = { ...cache, ...JSON.parse(raw) };
     } catch (_) {}
   }
 
@@ -169,56 +173,101 @@
     return r.json();
   }
 
-  async function findArtistMBID(name, mbzId) {
-    if (mbzId) return mbzId;
+  // Unrelated bands share a name; they do not share a back catalogue. Ten
+  // artists are called "Delirium" and taking the first exact name match put a
+  // punk discography on a metal band's page. So every candidate is judged by
+  // what the library already holds, and a name nothing confirms draws nothing.
+  //
+  // The check costs no extra requests in the ordinary case: the discography a
+  // candidate is judged on is the same one the panel needs anyway.
+  async function identifyArtist(name, mbzId, localAlbums) {
+    // A MusicBrainz id in the file tags is not a guess and needs no second opinion.
+    if (mbzId) {
+      return { mbid: mbzId, albums: studioAlbums(await getReleaseGroups(mbzId)) };
+    }
 
     const key = name.toLowerCase();
-    if (cache.artists[key] !== undefined && isFresh("a:" + key))
-      return cache.artists[key];
-
     const data = await mbFetch(
-      `${MB_BASE}/artist/?query=artist:"${encodeURIComponent(name)}"&limit=5&fmt=json`
+      `${MB_BASE}/artist/?query=artist:"${encodeURIComponent(name)}"&limit=10&fmt=json`
     );
+    const all = data.artists || [];
 
-    let mbid = null;
-    for (const a of data.artists || []) {
-      if (a.name.toLowerCase() === key) {
-        mbid = a.id;
-        break;
+    let candidates = all.filter((a) => a.name.toLowerCase() === key);
+    // A near miss on the name is a much weaker signal, so it is only worth
+    // considering when nothing matches exactly — and it still has to prove itself.
+    if (!candidates.length && all[0]?.score >= 90) candidates = [all[0]];
+    if (!candidates.length) return null;
+
+    if (candidates.length > MAX_CANDIDATES) {
+      console.log(
+        LOG_PREFIX,
+        `${candidates.length} artists are called "${name}"; judging the first ${MAX_CANDIDATES}.`
+      );
+      candidates = candidates.slice(0, MAX_CANDIDATES);
+    }
+
+    const owned = ownedMatcher(localAlbums);
+    const scored = [];
+    for (const cand of candidates) {
+      const groups = await getReleaseGroups(cand.id);
+      scored.push({
+        mbid: cand.id,
+        albums: studioAlbums(groups),
+        // Judged on everything, offered as studio albums only.
+        overlap: groups.filter((g) => owned(g.title)).length,
+        catalogue: groups.length,
+      });
+    }
+    scored.sort((x, y) => y.overlap - x.overlap);
+    const best = scored[0];
+
+    if (best.overlap > 0) {
+      // A tie is not an answer: two catalogues matching equally well means the
+      // library cannot tell them apart either.
+      if (scored.length > 1 && scored[1].overlap === best.overlap) {
+        console.log(LOG_PREFIX, `"${name}" is ambiguous — two catalogues match equally well.`);
+        return null;
       }
-    }
-    if (!mbid && data.artists?.[0]?.score >= 90) {
-      mbid = data.artists[0].id;
+      return best;
     }
 
-    cache.artists[key] = mbid;
-    cache.ts["a:" + key] = Date.now();
-    saveCache();
-    return mbid;
+    // Nothing matched. A catalogue that lists no albums at all contradicts
+    // nothing, so a lone candidate like that is still the only answer available.
+    if (scored.length === 1 && !best.catalogue) return best;
+
+    console.log(
+      LOG_PREFIX,
+      `No artist called "${name}" in MusicBrainz shares an album with your library — not guessing.`
+    );
+    return null;
   }
 
-  async function getStudioAlbums(mbid) {
-    if (cache.albums[mbid] && isFresh("rg:" + mbid)) return cache.albums[mbid];
+  // Every release group MusicBrainz files as an album, secondary types intact.
+  // Two questions are asked of this list and they want different subsets: a
+  // compilation is not a record to go and fetch, but owning one is still proof
+  // of which band this is. Filtering here served the first question and quietly
+  // broke the second — an artist whose one shared record was a compilation read
+  // as a stranger.
+  async function getReleaseGroups(mbid) {
+    if (cache.albums[mbid] && isFresh("rg2:" + mbid)) return cache.albums[mbid];
 
-    const albums = [];
+    const groups = [];
     let offset = 0;
 
     while (true) {
       const data = await mbFetch(
         `${MB_BASE}/release-group?artist=${mbid}&type=album&limit=100&offset=${offset}&fmt=json`
       );
-      const groups = data["release-groups"] || [];
-      if (!groups.length) break;
+      const page = data["release-groups"] || [];
+      if (!page.length) break;
 
-      for (const rg of groups) {
+      for (const rg of page) {
         if (rg["primary-type"] !== "Album") continue;
-        const secondary = rg["secondary-types"] || [];
-        if (secondary.some((s) => EXCLUDED_SECONDARY.has(s))) continue;
-
-        albums.push({
+        groups.push({
           title: rg.title,
           year: (rg["first-release-date"] || "????").slice(0, 4),
           mbid: rg.id,
+          secondary: rg["secondary-types"] || [],
         });
       }
 
@@ -226,11 +275,21 @@
       if (offset >= (data["release-group-count"] || 0)) break;
     }
 
-    albums.sort((a, b) => a.year.localeCompare(b.year));
-    cache.albums[mbid] = albums;
-    cache.ts["rg:" + mbid] = Date.now();
+    groups.sort((a, b) => a.year.localeCompare(b.year));
+    cache.albums[mbid] = groups;
+    // A new freshness key, because an entry written by an older version was
+    // already filtered and carries no secondary types to filter by.
+    cache.ts["rg2:" + mbid] = Date.now();
     saveCache();
-    return albums;
+    return groups;
+  }
+
+  // What the panel offers to go and find: a compilation or a live record is
+  // not a gap in a collection.
+  function studioAlbums(groups) {
+    return groups.filter(
+      (g) => !(g.secondary || []).some((s) => EXCLUDED_SECONDARY.has(s))
+    );
   }
 
   // ── Local vs MusicBrainz comparison ──────────────────────
@@ -247,19 +306,25 @@
       .trim();
   }
 
-  function findMissing(localAlbums, mbAlbums) {
+  // A local copy often carries an edition suffix the catalogue title does not
+  // — "Raping Uranus: The Lost Tracks Of…" against plain "Raping Uranus" — and
+  // those suffixes are not always parenthesised, so a prefix match is needed.
+  // Only in that direction: a plain local title must not satisfy a longer,
+  // distinct catalogue entry, such as a live album named after the studio one.
+  //
+  // Both the missing list and artist identification ask this question, and they
+  // have to answer it the same way: when they disagreed, an artist whose one
+  // shared record carried such a suffix read as a different band entirely.
+  function ownedMatcher(localAlbums) {
     const local = localAlbums.map((a) => normalize(a.name));
-
-    // A local copy often carries an edition suffix the catalogue title does not
-    // — "…Revenge-10th Anniversary Edition" against plain "…Revenge" — and those
-    // suffixes are not always parenthesised, so a prefix match is needed. Only
-    // in that direction: a plain local title must not satisfy a longer, distinct
-    // catalogue entry.
-    const owned = (title) => {
+    return (title) => {
       const key = normalize(title);
       return local.some((have) => have === key || have.startsWith(key + " "));
     };
+  }
 
+  function findMissing(localAlbums, mbAlbums) {
+    const owned = ownedMatcher(localAlbums);
     return mbAlbums.filter((a) => !owned(a.title));
   }
 
@@ -595,22 +660,25 @@
       if (missing) {
         console.log(LOG_PREFIX, "Bridge | Missing:", missing.length);
       } else {
-        const mbid = await findArtistMBID(
+        const identified = await identifyArtist(
           artistInfo.name,
-          artistInfo.mbzArtistId
+          artistInfo.mbzArtistId,
+          localAlbums
         );
-        console.log(LOG_PREFIX, "MBID:", mbid);
+        console.log(LOG_PREFIX, "MBID:", identified?.mbid ?? "not identified");
 
-        if (!mbid) {
+        if (!identified) {
           removeMessages();
           working = false;
           return;
         }
 
-        const mbAlbums = await getStudioAlbums(mbid);
-        missing = findMissing(localAlbums, mbAlbums);
+        missing = findMissing(localAlbums, identified.albums);
 
-        console.log(LOG_PREFIX, "MusicBrainz:", mbAlbums.length, "| Missing:", missing.length);
+        console.log(
+          LOG_PREFIX,
+          "MusicBrainz:", identified.albums.length, "| Missing:", missing.length
+        );
       }
 
       removeMessages();
