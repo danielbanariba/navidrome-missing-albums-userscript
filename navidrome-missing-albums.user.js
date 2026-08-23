@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.2.0
+// @version      1.3.0
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -69,6 +69,39 @@
       bridgeReady = false;
     }
     return bridgeReady;
+  }
+
+  async function bridgeMissing(artistId) {
+    // The bridge answers a better question than this script can ask alone. It
+    // identifies the artist by matching the library's own albums against each
+    // candidate's catalogue, which searching MusicBrainz by name cannot do:
+    // ten artists are called "Delirium" and the search returns the wrong one
+    // first. It also widens the result with Discogs, which lists records
+    // MusicBrainz has never heard of.
+    //
+    // Returning null means "no better answer available", and the MusicBrainz
+    // path below runs unchanged — which is what happens for anyone not running
+    // a bridge at all.
+    try {
+      const res = await fetch(
+        `${BRIDGE_BASE}/missing?id=${encodeURIComponent(artistId)}`
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data.monitored) return null; // Lidarr does not hold this artist yet
+      return (data.missing || []).map((a) => ({
+        title: a.title,
+        year: a.year || "????",
+        // Absent for a record only Discogs knows: no cover art to fetch, and
+        // nothing Lidarr can be asked for.
+        mbid: a.mbid || null,
+        albumId: a.id ?? null,
+        requestable: a.requestable !== false,
+      }));
+    } catch (err) {
+      console.warn(LOG_PREFIX, "bridge /missing unavailable", err);
+      return null;
+    }
   }
 
   // ── Self-detect: only run on pages that look like Navidrome ──
@@ -311,7 +344,15 @@
 
     // Replace cover art
     const img = tile.querySelector("img");
-    if (img) setCoverWithRetry(img, album);
+    if (img) {
+      // A record only Discogs lists has no release-group id, so there is no
+      // Cover Art Archive entry to go and fetch.
+      if (album.mbid) setCoverWithRetry(img, album);
+      else {
+        img.src = PLACEHOLDER_SVG;
+        img.alt = album.title;
+      }
+    }
 
     // Replace album name (the second <a> with /album/ href is the title link)
     const links = tile.querySelectorAll('a[href*="/album/"]');
@@ -354,14 +395,18 @@
         "position:absolute;top:6px;left:6px;background:rgba(0,0,0,0.72);" +
         "color:#b9bec7;font-size:9px;padding:2px 7px;border-radius:10px;" +
         "pointer-events:none;letter-spacing:0.6px;text-transform:uppercase;";
-      badge.textContent = "Not in library";
+      // An album Lidarr has no id for cannot be fetched, and a badge that said
+      // only "Not in library" next to no button would look broken rather than
+      // explained.
+      badge.textContent =
+        album.requestable === false ? "Not on MusicBrainz" : "Not in library";
       imgWrapper.appendChild(badge);
     }
 
     // Request button, only when the bridge answered the probe.
     if (tileDiv) {
       probeBridge().then((ready) => {
-        if (!ready) return;
+        if (!ready || album.requestable === false) return;
         tileDiv.style.position = "relative";
         const overlay = createRequestOverlay(album);
         tileDiv.appendChild(overlay);
@@ -427,7 +472,11 @@
         const res = await fetch(`${BRIDGE_BASE}/request`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mbid: album.mbid }),
+          // Lidarr's own id when the bridge supplied one, which needs no
+          // catalogue lookup on the way in.
+          body: JSON.stringify(
+            album.albumId ? { albumId: album.albumId } : { mbid: album.mbid }
+          ),
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
@@ -531,22 +580,28 @@
         return;
       }
 
-      const mbid = await findArtistMBID(
-        artistInfo.name,
-        artistInfo.mbzArtistId
-      );
-      console.log(LOG_PREFIX, "MBID:", mbid);
+      let missing = (await probeBridge()) ? await bridgeMissing(artistId) : null;
 
-      if (!mbid) {
-        removeMessages();
-        working = false;
-        return;
+      if (missing) {
+        console.log(LOG_PREFIX, "Bridge | Missing:", missing.length);
+      } else {
+        const mbid = await findArtistMBID(
+          artistInfo.name,
+          artistInfo.mbzArtistId
+        );
+        console.log(LOG_PREFIX, "MBID:", mbid);
+
+        if (!mbid) {
+          removeMessages();
+          working = false;
+          return;
+        }
+
+        const mbAlbums = await getStudioAlbums(mbid);
+        missing = findMissing(localAlbums, mbAlbums);
+
+        console.log(LOG_PREFIX, "MusicBrainz:", mbAlbums.length, "| Missing:", missing.length);
       }
-
-      const mbAlbums = await getStudioAlbums(mbid);
-      const missing = findMissing(localAlbums, mbAlbums);
-
-      console.log(LOG_PREFIX, "MusicBrainz:", mbAlbums.length, "| Missing:", missing.length);
 
       removeMessages();
 

@@ -64,6 +64,28 @@ const COVER_RETRY_BASE_MS = 800;            // first backoff, doubles each retry
 const COVER_RETRY_JITTER_MS = 400;          // random spread, avoids lockstep retries
 ```
 
+## A better discography when the bridge is present
+
+Searching MusicBrainz by artist name is the weak link in this script. Ten
+artists are called "Delirium" and the search returns an Italian prog band first;
+the discography drawn for a Honduran metal band was somebody else's entirely.
+
+[navidrome-lidarr-bridge][bridge] can answer that better, because it can see the
+library: unrelated bands sharing a name do not share a back catalogue, so the
+candidate whose catalogue contains the albums already owned is the right one. It
+also widens the result with Discogs, which lists releases MusicBrainz has never
+heard of — three of them for that same band.
+
+So when the bridge answers, its `/missing` is used instead of the MusicBrainz
+path here. When it does not, nothing changes: the script resolves names on its
+own exactly as before, which is what happens for anyone not running a bridge.
+
+A release only Discogs knows is shown greyed like the rest but badged **Not on
+MusicBrainz** and given no request button — Lidarr has no id to fetch it with.
+Naming a record you did not know existed is still worth doing.
+
+[bridge]: https://github.com/danielbanariba/navidrome-lidarr-bridge
+
 ## Requesting a missing album (optional)
 
 Paired with [navidrome-lidarr-bridge][bridge], each placeholder gets a
