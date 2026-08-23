@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.3.0
+// @version      1.4.0
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -95,6 +95,8 @@
         // Absent for a record only Discogs knows: no cover art to fetch, and
         // nothing Lidarr can be asked for.
         mbid: a.mbid || null,
+        // Discogs thumbnail, used when Cover Art Archive has nothing.
+        cover: a.cover || null,
         albumId: a.id ?? null,
         requestable: a.requestable !== false,
       }));
@@ -288,7 +290,11 @@
     img.onerror = function () {
       if (attempt >= COVER_RETRIES) {
         this.onerror = null;
-        this.src = PLACEHOLDER_SVG;
+        // Cover Art Archive only holds what somebody uploaded, and for an
+        // obscure pressing that is often nothing — a 404 no amount of retrying
+        // will fix. The bridge already carries a Discogs thumbnail for exactly
+        // this case, so fall through to it before giving up on a picture.
+        this.src = album.cover || PLACEHOLDER_SVG;
         return;
       }
       attempt++;
@@ -346,11 +352,15 @@
     const img = tile.querySelector("img");
     if (img) {
       // A record only Discogs lists has no release-group id, so there is no
-      // Cover Art Archive entry to go and fetch.
+      // Cover Art Archive entry to go and fetch — but Discogs itself has art.
       if (album.mbid) setCoverWithRetry(img, album);
       else {
-        img.src = PLACEHOLDER_SVG;
         img.alt = album.title;
+        img.onerror = function () {
+          this.onerror = null;
+          this.src = PLACEHOLDER_SVG;
+        };
+        img.src = album.cover || PLACEHOLDER_SVG;
       }
     }
 

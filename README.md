@@ -84,6 +84,13 @@ A release only Discogs knows is shown greyed like the rest but badged **Not on
 MusicBrainz** and given no request button — Lidarr has no id to fetch it with.
 Naming a record you did not know existed is still worth doing.
 
+Cover art follows the same order. Cover Art Archive only holds what somebody
+uploaded, so an obscure pressing often answers 404 no matter how many times it
+is retried. The bridge sends a Discogs thumbnail alongside each entry, used when
+the Archive has nothing and for releases that have no MusicBrainz id at all. On
+the artist that prompted this, that is the difference between four covers and
+seven.
+
 [bridge]: https://github.com/danielbanariba/navidrome-lidarr-bridge
 
 ## Requesting a missing album (optional)
