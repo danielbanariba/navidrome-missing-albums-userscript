@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.5.1
+// @version      1.6.0
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -121,7 +121,33 @@
   }
 
   // ── Cache ────────────────────────────────────────────────
-  let cache = { albums: {}, ts: {} };
+  let cache = { albums: {}, missing: {}, requested: {}, ts: {} };
+
+  // What the library holds, as one short string. The missing list is only valid
+  // for the library it was computed against, so an album arriving has to
+  // invalidate it — and nothing else should.
+  function librarySignature(localAlbums) {
+    const names = localAlbums.map((a) => normalize(a.name)).sort().join("|");
+    let hash = 0;
+    for (let i = 0; i < names.length; i++) {
+      hash = (hash * 31 + names.charCodeAt(i)) | 0;
+    }
+    return localAlbums.length + ":" + hash;
+  }
+
+  // A request that succeeded stays remembered, so reloading the page does not
+  // offer to make it again as though nothing had happened.
+  function remember(album) {
+    const key = album.mbid || album.title;
+    if (!key) return;
+    cache.requested[key] = Date.now();
+    saveCache();
+  }
+
+  function wasRequested(album) {
+    const at = cache.requested[album.mbid || album.title];
+    return !!at && Date.now() - at < CACHE_TTL;
+  }
 
   function loadCache() {
     try {
@@ -526,6 +552,7 @@
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = "Request";
+    const already = wasRequested(album);
     btn.style.cssText =
       "pointer-events:auto;cursor:pointer;font:600 11px/1 system-ui,sans-serif;" +
       "letter-spacing:.4px;padding:7px 16px;border-radius:999px;" +
@@ -540,14 +567,22 @@
     });
 
     // An outcome has to stay readable after the pointer leaves the tile.
+    //
+    // Success is final; failure is not. Locking the button on failure too meant
+    // the only way to try again was to reload the page, which threw away the
+    // whole discography lookup and started it over — for a request that may
+    // simply have hit a busy Lidarr.
     const settle = (text, ok) => {
       btn.textContent = text;
-      btn.disabled = true;
-      btn.style.cursor = "default";
-      btn.style.borderColor = "transparent";
+      btn.disabled = ok;
+      btn.style.cursor = ok ? "default" : "pointer";
+      btn.style.borderColor = ok ? "transparent" : "rgba(255,255,255,.25)";
       btn.style.background = ok ? "rgba(46,125,79,.95)" : "rgba(142,59,52,.95)";
       overlay.dataset.pinned = "1";
       overlay.style.opacity = "1";
+      if (!ok) {
+        btn.title = (btn.title ? btn.title + " — " : "") + "click to try again";
+      }
     };
 
     btn.addEventListener("click", async (e) => {
@@ -557,6 +592,8 @@
       e.stopPropagation();
       btn.disabled = true;
       btn.textContent = "Requesting…";
+      btn.title = "";
+      btn.style.background = "rgba(28,32,38,.92)";
       overlay.dataset.pinned = "1";
       try {
         const res = await fetch(`${BRIDGE_BASE}/request`, {
@@ -571,6 +608,7 @@
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           settle("Requested ✓", true);
+          remember(album);
         } else {
           // 404 means Lidarr has not imported this artist yet, which is a
           // different problem from the album not existing.
@@ -583,6 +621,10 @@
         console.warn(LOG_PREFIX, "request failed", err);
       }
     });
+
+    if (already) {
+      settle("Requested ✓", true);
+    }
 
     overlay.appendChild(btn);
     return overlay;
@@ -655,8 +697,6 @@
     removeMessages();
 
     try {
-      showLoading(grid);
-
       const [artistInfo, localAlbums] = await Promise.all([
         getArtistInfo(artistId),
         getArtistAlbums(artistId),
@@ -670,11 +710,34 @@
         return;
       }
 
-      let missing = (await probeBridge()) ? await bridgeMissing(artistId) : null;
+      // Answered from memory when the library has not changed since. Without
+      // it, every visit to an artist page asked MusicBrainz who the band was
+      // all over again — and a failed request could only be retried by
+      // reloading, which threw that whole lookup away to redo it.
+      //
+      // The signature is what makes it safe to keep: an album arriving changes
+      // it and the answer is recomputed; nothing else does.
+      const signature = librarySignature(localAlbums);
+      const stored = cache.missing[artistId];
+      const remembered =
+        stored && stored.sig === signature && isFresh("m:" + artistId)
+          ? stored.albums
+          : null;
 
+      let missing = remembered;
       if (missing) {
-        console.log(LOG_PREFIX, "Bridge | Missing:", missing.length);
+        console.log(LOG_PREFIX, "from cache |", missing.length, "missing");
       } else {
+        // Only once something is actually going to be fetched: a cached answer
+        // that flashed "Searching on MusicBrainz…" would be lying about it.
+        showLoading(grid);
+        if (await probeBridge()) {
+          missing = await bridgeMissing(artistId);
+          if (missing) console.log(LOG_PREFIX, "bridge |", missing.length, "missing");
+        }
+      }
+
+      if (!missing) {
         const identified = await identifyArtist(
           artistInfo.name,
           artistInfo.mbzArtistId,
@@ -689,11 +752,14 @@
         }
 
         missing = findMissing(localAlbums, identified.albums);
+        console.log(LOG_PREFIX, "MusicBrainz:", identified.albums.length,
+                    "|", missing.length, "missing");
+      }
 
-        console.log(
-          LOG_PREFIX,
-          "MusicBrainz:", identified.albums.length, "| Missing:", missing.length
-        );
+      if (!remembered) {
+        cache.missing[artistId] = { sig: signature, albums: missing };
+        cache.ts["m:" + artistId] = Date.now();
+        saveCache();
       }
 
       removeMessages();
