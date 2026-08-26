@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.9.0
+// @version      1.9.2
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -401,6 +401,7 @@
     st: "saint", ste: "saint", sainte: "saint",
     dr: "doctor",
     vol: "volume", pt: "part", no: "number", num: "number",
+    versus: "vs", v: "vs",
   };
 
   function normalize(name) {
@@ -410,11 +411,18 @@
       // "Xibalba" instead of becoming "xibalb a".
       .normalize("NFKD")
       .replace(/[\u0300-\u036f]/g, "")
-      .replace(/\s*\(.*?\)\s*/g, " ")
-      .replace(/\s*\[.*?\]\s*/g, " ")
+      // Only a bracketed group standing on its own is an edition note. One
+      // written inside a word is part of the title: "Pussy(De)Luxe" reduced to
+      // "pussy luxe" while the same record spelled "Pussy De Luxe" reduced to
+      // "pussy de luxe", so one album was listed twice as two missing records.
+      .replace(/(^|\s)[([].*?[)\]]/g, " ")
       // The word, not the symbol: deleting it leaves "rock roll" against
       // "rock and roll", which are the same record.
       .replace(/&/g, " and ")
+      // A slash between two names means what "vs" means, and it has to survive
+      // as a word: stripped to whitespace it left "spasm mizar" against
+      // "mizar vs spasm", which no longer look like the same split.
+      .replace(/\s*[/\\]\s*/g, " vs ")
       // Replaced with a space rather than deleted: dropping the hyphen turned
       // "Revenge-10th" into "revenge10th", which then no longer starts with
       // "revenge" — exactly what the prefix match below looks for.
@@ -434,11 +442,25 @@
   // Both the missing list and artist identification ask this question, and they
   // have to answer it the same way: when they disagreed, an artist whose one
   // shared record carried such a suffix read as a different band entirely.
+  // A split is credited to two acts and no two catalogues write it the same
+  // way — the library calls one "Mizar vs Spasm" where the catalogue has
+  // "Spasm / Mizar". Same record, reversed, and as strings they never meet.
+  // Only titles naming more than one act are compared this way: matching by
+  // unordered parts is looser than matching by string, and it is safe only
+  // where the order genuinely carries no meaning.
+  function splitParts(key) {
+    const parts = key.split(/\s+vs\s+/).filter(Boolean).sort();
+    return parts.length > 1 ? parts.join("\u0000") : null;
+  }
+
   function ownedMatcher(localAlbums) {
     const local = localAlbums.map((a) => normalize(a.name));
+    const localSplits = new Set(local.map(splitParts).filter(Boolean));
     return (title) => {
       const key = normalize(title);
-      return local.some((have) => have === key || have.startsWith(key + " "));
+      if (local.some((have) => have === key || have.startsWith(key + " "))) return true;
+      const parts = splitParts(key);
+      return parts !== null && localSplits.has(parts);
     };
   }
 
@@ -825,8 +847,13 @@
       el = document.createElement("div");
       el.id = STATUS_ID;
       el.style.cssText =
-        "padding:4px 16px 12px;color:#666;font-size:12px;min-height:16px;";
-      grid.parentNode.insertBefore(el, grid);
+        "padding:8px 16px 4px;color:#666;font-size:12px;min-height:16px;";
+      // Below the grid, not above it. Navidrome has already laid the covers out
+      // by the time this runs, so anything inserted ahead of them pushes every
+      // one of them down — once is better than the three times it used to be,
+      // but nothing is better still. Adding the row after the grid extends the
+      // page instead of moving it.
+      grid.parentNode.insertBefore(el, grid.nextSibling);
     }
     return el;
   }
