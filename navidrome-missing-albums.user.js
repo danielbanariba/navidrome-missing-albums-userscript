@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.6.0
+// @version      1.7.0
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -32,6 +32,7 @@
   const CAA_BASE = "https://coverartarchive.org";
   const CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
   const MARKER = "data-missing-album";
+  const HELD_MARKER = "data-held-upgrade";
   const LOG_PREFIX = "[Navidrome Missing Albums]";
 
   // Cover Art Archive 307-redirects to archive.org, whose download layer
@@ -80,6 +81,11 @@
     return bridgeReady;
   }
 
+  // What the bridge said the library already holds, from the last call. Kept
+  // beside the missing list rather than threaded through it: the two answers
+  // come from one request and are only ever used together.
+  let lastHeld = [];
+
   async function bridgeMissing(artistId) {
     // The bridge answers a better question than this script can ask alone. It
     // widens the discography with Discogs, which lists records MusicBrainz has
@@ -97,6 +103,7 @@
       if (!res.ok) return null;
       const data = await res.json();
       if (!data.monitored) return null; // Lidarr does not hold this artist yet
+      lastHeld = data.held || [];
       return (data.missing || []).map((a) => ({
         title: a.title,
         year: a.year || "????",
@@ -193,6 +200,38 @@
   // band happened to share. It matters much more now that identity is decided
   // by what the library holds, because a candidate could be confirmed by a
   // record belonging to a different artist.
+  // One call for the whole artist rather than one per album: the quality of
+  // what is held has to be known before any of it can be judged, and twenty
+  // requests to learn twenty codecs is a poor way to spend a page load.
+  function getArtistSongs(id) {
+    return ndFetch(
+      `/api/song?artist_id=${encodeURIComponent(id)}&_start=0&_end=1000`
+    );
+  }
+
+  const LOSSLESS_SUFFIX = new Set(["flac", "alac", "ape", "wv", "aiff", "wav"]);
+
+  // What the library holds this album as, in the terms the rest of this
+  // project uses: real hi-res, plain lossless, or lossy.
+  function qualityOf(songs) {
+    if (!songs.length) return null;
+    const suffix = (songs[0].suffix || "").toLowerCase();
+    const lossless = LOSSLESS_SUFFIX.has(suffix);
+    const depth = Math.max(...songs.map((s) => s.bitDepth || 0));
+    const rate = Math.max(...songs.map((s) => s.sampleRate || 0));
+    const rates = songs.map((s) => s.bitRate || 0).filter(Boolean);
+    const bitrate = rates.length
+      ? Math.round(rates.reduce((a, b) => a + b, 0) / rates.length)
+      : 0;
+    const hires = lossless && (depth > 16 || rate > 48000);
+    return {
+      tier: hires ? 2 : lossless ? 1 : 0,
+      label: lossless
+        ? `${suffix.toUpperCase()}${depth > 16 ? " " + depth + "bit" : ""}`
+        : `${suffix.toUpperCase()}${bitrate ? " " + bitrate : ""}`,
+    };
+  }
+
   function getArtistAlbums(id) {
     return ndFetch(
       `/api/album?artist_id=${encodeURIComponent(id)}` +
@@ -541,7 +580,7 @@
   // is meant to look faded; the button is not. Sized with aspect-ratio so it
   // covers the square art without reaching into the title row, and without
   // measuring pixels that a resize would invalidate.
-  function createRequestOverlay(album) {
+  function createRequestOverlay(album, label) {
     const overlay = document.createElement("div");
     overlay.style.cssText =
       "position:absolute;top:0;left:0;width:100%;aspect-ratio:1;z-index:2;" +
@@ -551,7 +590,7 @@
 
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = "Request";
+    btn.textContent = label || "Request";
     const already = wasRequested(album);
     btn.style.cssText =
       "pointer-events:auto;cursor:pointer;font:600 11px/1 system-ui,sans-serif;" +
@@ -630,6 +669,69 @@
     return overlay;
   }
 
+  // A record already on the shelf is not necessarily finished. One held as MP3
+  // can still be improved, and the panel is the only place that knows both what
+  // the library has and what can be asked for — but it has to say so gently:
+  // the offer is worth taking or leaving, and nothing is lost by declining it.
+  function decorateHeld(grid, quality, held) {
+    if (!held || !held.length) return;
+    const byTitle = new Map(held.map((h) => [normalize(h.title), h]));
+
+    for (const tile of grid.children) {
+      if (tile.hasAttribute(MARKER)) continue;
+      const link = tile.querySelector('a[href*="#/album/"]');
+      const id = link && (link.getAttribute("href").match(/#\/album\/([^/]+)/) || [])[1];
+      const found = id && quality.get(id);
+      // Only the lossy ones. Telling someone their 24-bit copy could be
+      // improved would be noise, and untrue.
+      if (!found || found.tier !== 0) continue;
+
+      // The tile bar carries no text in this Navidrome build; the cover's alt
+      // does. Falling back to the bar keeps it working where it does.
+      const title = (
+        tile.querySelector("img")?.alt ||
+        tile.querySelector('[class*="MuiGridListTileBar-title"]')?.textContent ||
+        ""
+      ).trim();
+      if (!title) continue;
+
+      // A held copy often carries an edition suffix the catalogue title does
+      // not — "Captain Morgan's Revenge-10th Anniversary Edition" against plain
+      // "Captain Morgan's Revenge" — which is why an exact match found nothing.
+      const key = normalize(title);
+      const entry =
+        byTitle.get(key) ||
+        held.find((h) => {
+          const cat = normalize(h.title);
+          return cat && (key === cat || key.startsWith(cat + " "));
+        });
+      if (!entry || !entry.id) continue;
+
+      const wrap = tile.querySelector('[class*="MuiGridListTile-tile"]') || tile;
+      wrap.style.position = wrap.style.position || "relative";
+
+      const pill = document.createElement("div");
+      pill.textContent = found.label;
+      pill.setAttribute(HELD_MARKER, "true");
+      pill.style.cssText =
+        "position:absolute;top:8px;left:8px;z-index:3;pointer-events:none;" +
+        "font:600 10px/1 system-ui,sans-serif;letter-spacing:.4px;" +
+        "padding:4px 8px;border-radius:999px;color:#e8d9b0;" +
+        "background:rgba(28,24,16,.82);border:1px solid rgba(224,176,112,.35);";
+      wrap.appendChild(pill);
+
+      const overlay = createRequestOverlay(
+        { albumId: entry.id, mbid: entry.mbid, title: entry.title },
+        "Try for lossless"
+      );
+      overlay.setAttribute(HELD_MARKER, "true");
+      overlay.querySelector("button").title =
+        `You have this as ${found.label}. Ask for a lossless copy — ` +
+        `nothing is lost if none turns up.`;
+      wrap.appendChild(overlay);
+    }
+  }
+
   function insertByYear(grid, tile, album) {
     const existing = findTiles(grid);
     for (const el of existing) {
@@ -691,16 +793,29 @@
     working = true;
     currentArtistId = artistId;
 
-    grid
-      .querySelectorAll(`[${MARKER}]`)
-      .forEach((el) => el.remove());
+    grid.querySelectorAll(`[${MARKER}]`).forEach((el) => el.remove());
+    grid.querySelectorAll(`[${HELD_MARKER}]`).forEach((el) => el.remove());
     removeMessages();
 
     try {
-      const [artistInfo, localAlbums] = await Promise.all([
+      const [artistInfo, localAlbums, songs] = await Promise.all([
         getArtistInfo(artistId),
         getArtistAlbums(artistId),
+        getArtistSongs(artistId).catch(() => []),
       ]);
+
+      // Quality per album, from the one song call above.
+      const byAlbum = new Map();
+      for (const song of songs) {
+        if (!song.albumId) continue;
+        if (!byAlbum.has(song.albumId)) byAlbum.set(song.albumId, []);
+        byAlbum.get(song.albumId).push(song);
+      }
+      const quality = new Map();
+      for (const [id, group] of byAlbum) {
+        const q = qualityOf(group);
+        if (q) quality.set(id, q);
+      }
 
       console.log(LOG_PREFIX, "Artist:", artistInfo?.name, "| Local albums:", localAlbums?.length);
 
@@ -719,10 +834,9 @@
       // it and the answer is recomputed; nothing else does.
       const signature = librarySignature(localAlbums);
       const stored = cache.missing[artistId];
-      const remembered =
-        stored && stored.sig === signature && isFresh("m:" + artistId)
-          ? stored.albums
-          : null;
+      const fresh = stored && stored.sig === signature && isFresh("m:" + artistId);
+      const remembered = fresh ? stored.albums : null;
+      if (fresh) lastHeld = stored.held || [];
 
       let missing = remembered;
       if (missing) {
@@ -757,7 +871,7 @@
       }
 
       if (!remembered) {
-        cache.missing[artistId] = { sig: signature, albums: missing };
+        cache.missing[artistId] = { sig: signature, albums: missing, held: lastHeld };
         cache.ts["m:" + artistId] = Date.now();
         saveCache();
       }
@@ -781,6 +895,8 @@
         const tile = createMissingTile(album, template);
         insertByYear(grid, tile, album);
       }
+
+      decorateHeld(grid, quality, lastHeld);
 
       const counter = document.createElement("div");
       counter.id = "missing-albums-counter";
