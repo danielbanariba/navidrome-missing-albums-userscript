@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.7.5
+// @version      1.8.0
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -691,8 +691,7 @@
   // the library has and what can be asked for — but it has to say so gently:
   // the offer is worth taking or leaving, and nothing is lost by declining it.
   function decorateHeld(grid, quality, held) {
-    if (!held || !held.length) return;
-    const byTitle = new Map(held.map((h) => [normalize(h.title), h]));
+    const byTitle = new Map((held || []).map((h) => [normalize(h.title), h]));
 
     for (const tile of grid.children) {
       if (tile.hasAttribute(MARKER)) continue;
@@ -718,13 +717,17 @@
       const key = normalize(title);
       const entry =
         byTitle.get(key) ||
-        held.find((h) => {
+        (held || []).find((h) => {
           const cat = normalize(h.title);
           return cat && (key === cat || key.startsWith(cat + " "));
         });
       // Either id will do: Lidarr's own when it holds the artist, the
-      // release-group id when it does not.
-      if (!entry || !(entry.id || entry.mbid)) continue;
+      // release-group id when it does not. Without one there is nothing to
+      // ask with — but the badge still goes on, because knowing a record is
+      // MP3 is worth saying even when nothing can be done about it. One
+      // artist here holds nineteen albums, fifteen of them lossy, and the
+      // catalogue lists three; the other twelve were told nothing at all.
+      const askable = !!(entry && (entry.id || entry.mbid));
 
       const wrap = tile.querySelector('[class*="MuiGridListTile-tile"]') || tile;
       wrap.style.position = wrap.style.position || "relative";
@@ -738,6 +741,8 @@
         "padding:4px 8px;border-radius:999px;color:#e8d9b0;" +
         "background:rgba(28,24,16,.82);border:1px solid rgba(224,176,112,.35);";
       wrap.appendChild(pill);
+
+      if (!askable) continue;
 
       const overlay = createRequestOverlay(
         { albumId: entry.id || null, mbid: entry.mbid, title: entry.title },
