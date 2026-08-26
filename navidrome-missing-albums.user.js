@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.7.0
+// @version      1.7.1
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -705,7 +705,9 @@
           const cat = normalize(h.title);
           return cat && (key === cat || key.startsWith(cat + " "));
         });
-      if (!entry || !entry.id) continue;
+      // Either id will do: Lidarr's own when it holds the artist, the
+      // release-group id when it does not.
+      if (!entry || !(entry.id || entry.mbid)) continue;
 
       const wrap = tile.querySelector('[class*="MuiGridListTile-tile"]') || tile;
       wrap.style.position = wrap.style.position || "relative";
@@ -721,7 +723,7 @@
       wrap.appendChild(pill);
 
       const overlay = createRequestOverlay(
-        { albumId: entry.id, mbid: entry.mbid, title: entry.title },
+        { albumId: entry.id || null, mbid: entry.mbid, title: entry.title },
         "Try for lossless"
       );
       overlay.setAttribute(HELD_MARKER, "true");
@@ -868,6 +870,16 @@
         missing = findMissing(localAlbums, identified.albums);
         console.log(LOG_PREFIX, "MusicBrainz:", identified.albums.length,
                     "|", missing.length, "missing");
+
+        // The badge needs something to ask with, and without Lidarr holding
+        // this artist there is no album id — but /request takes a release-group
+        // id too and imports the artist on the way in. So the catalogue already
+        // in hand supplies it, and an artist nobody starred is served as well
+        // as one that was.
+        const owned = ownedMatcher(localAlbums);
+        lastHeld = identified.albums
+          .filter((a) => owned(a.title) && a.mbid)
+          .map((a) => ({ id: null, mbid: a.mbid, title: a.title }));
       }
 
       if (!remembered) {
