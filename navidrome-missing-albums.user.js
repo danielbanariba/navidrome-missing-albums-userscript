@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.8.0
+// @version      1.9.0
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -390,17 +390,39 @@
   }
 
   // ── Local vs MusicBrainz comparison ──────────────────────
+
+  // One word, spelled two ways on either side of the comparison. The library
+  // holds "Mr Patate" where MusicBrainz lists "M. Patate", and once the period
+  // is gone "mr" no longer looks anything like "m" — so an album already in the
+  // library shows up as missing and is offered for download a second time.
+  const ABBREV = {
+    m: "mr", mister: "mr", monsieur: "mr",
+    mme: "mrs", madame: "mrs", missus: "mrs",
+    st: "saint", ste: "saint", sainte: "saint",
+    dr: "doctor",
+    vol: "volume", pt: "part", no: "number", num: "number",
+  };
+
   function normalize(name) {
     return name
       .toLowerCase()
+      // Accents are folded rather than dropped, so "Xibalbá" still matches
+      // "Xibalba" instead of becoming "xibalb a".
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
       .replace(/\s*\(.*?\)\s*/g, " ")
       .replace(/\s*\[.*?\]\s*/g, " ")
+      // The word, not the symbol: deleting it leaves "rock roll" against
+      // "rock and roll", which are the same record.
+      .replace(/&/g, " and ")
       // Replaced with a space rather than deleted: dropping the hyphen turned
       // "Revenge-10th" into "revenge10th", which then no longer starts with
       // "revenge" — exactly what the prefix match below looks for.
       .replace(/[^\w\s]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => ABBREV[w] || w)
+      .join(" ");
   }
 
   // A local copy often carries an edition suffix the catalogue title does not
@@ -692,6 +714,12 @@
   // the offer is worth taking or leaving, and nothing is lost by declining it.
   function decorateHeld(grid, quality, held) {
     const byTitle = new Map((held || []).map((h) => [normalize(h.title), h]));
+    // The bridge names the Navidrome album each catalogue entry belongs to, and
+    // an id is not a spelling: MusicBrainz files the 1999 demo as "Ultra Vomit"
+    // while the folder is called "Demo", and no normalising makes those meet.
+    const byId = new Map(
+      (held || []).filter((h) => h.ndId).map((h) => [h.ndId, h])
+    );
 
     for (const tile of grid.children) {
       if (tile.hasAttribute(MARKER)) continue;
@@ -716,6 +744,7 @@
       // "Captain Morgan's Revenge" — which is why an exact match found nothing.
       const key = normalize(title);
       const entry =
+        byId.get(id) ||
         byTitle.get(key) ||
         (held || []).find((h) => {
           const cat = normalize(h.title);
@@ -780,21 +809,39 @@
     grid.appendChild(tile);
   }
 
-  // ── Status messages ──────────────────────────────────────
+  // ── Status line ──────────────────────────────────────────
+  //
+  // One element, created once, that never leaves and never changes height.
+  // Three separate notices used to be inserted above the grid and taken away
+  // again — searching, the count, "you have every studio album" — and each
+  // arrival and departure shifted every cover on the page down and back up.
+  // A row that is always there, sometimes holding no text, says the same
+  // things without moving anything.
+  const STATUS_ID = "missing-albums-status";
+
+  function statusLine(grid) {
+    let el = document.getElementById(STATUS_ID);
+    if (!el) {
+      el = document.createElement("div");
+      el.id = STATUS_ID;
+      el.style.cssText =
+        "padding:4px 16px 12px;color:#666;font-size:12px;min-height:16px;";
+      grid.parentNode.insertBefore(el, grid);
+    }
+    return el;
+  }
+
+  function setStatus(grid, text) {
+    statusLine(grid).textContent = text || "";
+  }
+
   function showLoading(grid) {
-    removeMessages();
-    const el = document.createElement("div");
-    el.id = "missing-albums-loading";
-    el.style.cssText =
-      "padding:8px 16px;color:#888;font-size:13px;font-style:italic;";
-    el.textContent = "Searching for missing albums on MusicBrainz…";
-    grid.parentNode.insertBefore(el, grid);
+    setStatus(grid, "Searching for missing albums on MusicBrainz…");
   }
 
   function removeMessages() {
-    document.getElementById("missing-albums-loading")?.remove();
-    document.getElementById("missing-albums-counter")?.remove();
-    document.getElementById("missing-albums-complete")?.remove();
+    const el = document.getElementById(STATUS_ID);
+    if (el) el.textContent = "";
   }
 
   // ── Main flow ────────────────────────────────────────────
@@ -928,12 +975,6 @@
       removeMessages();
 
       if (!missing.length) {
-        const msg = document.createElement("div");
-        msg.style.cssText = "padding:8px 16px;color:#555;font-size:12px;";
-        msg.textContent = "You have every studio album for this artist.";
-        msg.id = "missing-albums-complete";
-        grid.parentNode.insertBefore(msg, grid);
-        setTimeout(() => msg.remove(), 4000);
         // Having the whole discography is not the same as being finished with
         // it: the badge is about the quality of what is held, and leaving here
         // meant the artists with nothing missing — the well-kept ones — were
@@ -952,11 +993,7 @@
 
       decorateHeld(grid, quality, lastHeld);
 
-      const counter = document.createElement("div");
-      counter.id = "missing-albums-counter";
-      counter.style.cssText = "padding:4px 16px 12px;color:#666;font-size:12px;";
-      counter.textContent = `${missing.length} studio album(s) not in your library`;
-      grid.parentNode.insertBefore(counter, grid);
+      setStatus(grid, `${missing.length} studio album(s) not in your library`);
     } catch (e) {
       console.error(LOG_PREFIX, "Error:", e);
       removeMessages();
