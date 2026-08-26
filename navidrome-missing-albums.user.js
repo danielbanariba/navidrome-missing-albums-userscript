@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.7.4
+// @version      1.7.5
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -929,6 +929,11 @@
         msg.id = "missing-albums-complete";
         grid.parentNode.insertBefore(msg, grid);
         setTimeout(() => msg.remove(), 4000);
+        // Having the whole discography is not the same as being finished with
+        // it: the badge is about the quality of what is held, and leaving here
+        // meant the artists with nothing missing — the well-kept ones — were
+        // the only ones never told which of their records are still MP3.
+        decorateHeld(grid, quality, lastHeld);
         working = false;
         return;
       }
