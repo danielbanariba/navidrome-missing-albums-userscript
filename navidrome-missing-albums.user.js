@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.7.2
+// @version      1.7.4
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -110,6 +110,8 @@
         // Absent for a record only Discogs knows: no cover art to fetch, and
         // nothing Lidarr can be asked for.
         mbid: a.mbid || null,
+        // Lidarr already monitoring it means somebody pressed this button.
+        requested: a.requested === true,
         // Discogs thumbnail, used when Cover Art Archive has nothing.
         cover: a.cover || null,
         albumId: a.id ?? null,
@@ -152,6 +154,11 @@
   }
 
   function wasRequested(album) {
+    // The server's answer first. An album Lidarr is monitoring with nothing on
+    // disk was asked for and is still being looked for — that record survives a
+    // cleared browser and reads the same on every device, which a note kept in
+    // one browser's storage does not.
+    if (album.requested) return true;
     const at = cache.requested[album.mbid || album.title];
     return !!at && Date.now() - at < CACHE_TTL;
   }
@@ -740,7 +747,19 @@
       overlay.querySelector("button").title =
         `You have this as ${found.label}. Ask for a lossless copy — ` +
         `nothing is lost if none turns up.`;
+      // Above Navidrome's own hover controls, which sit on the same corner of
+      // the cover and would otherwise take the pointer first.
+      overlay.style.zIndex = "5";
       wrap.appendChild(overlay);
+
+      // The overlay starts invisible and is revealed on hover. A tile drawn by
+      // this script gets those listeners when it is built; one of Navidrome's
+      // own never did, so the button was there the whole time at zero opacity
+      // and nothing could reach it.
+      tile.addEventListener("mouseenter", () => (overlay.style.opacity = "1"));
+      tile.addEventListener("mouseleave", () => {
+        if (!overlay.dataset.pinned) overlay.style.opacity = "0";
+      });
     }
   }
 
