@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.7.1
+// @version      1.7.2
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -173,6 +173,16 @@
 
   function isFresh(key) {
     return cache.ts[key] && Date.now() - cache.ts[key] < CACHE_TTL;
+  }
+
+  // Bumped whenever a cached entry gains a field. An entry written before that
+  // field existed is still fresh by its timestamp, so without this it would be
+  // read back missing the very thing a new version needs — and the feature
+  // would stay invisible until the cache aged out a week later.
+  const CACHE_SHAPE = 2;
+
+  function usable(entry) {
+    return !!entry && entry.shape === CACHE_SHAPE;
   }
 
   // ── Navidrome API ────────────────────────────────────────
@@ -836,7 +846,8 @@
       // it and the answer is recomputed; nothing else does.
       const signature = librarySignature(localAlbums);
       const stored = cache.missing[artistId];
-      const fresh = stored && stored.sig === signature && isFresh("m:" + artistId);
+      const fresh =
+        usable(stored) && stored.sig === signature && isFresh("m:" + artistId);
       const remembered = fresh ? stored.albums : null;
       if (fresh) lastHeld = stored.held || [];
 
@@ -883,7 +894,9 @@
       }
 
       if (!remembered) {
-        cache.missing[artistId] = { sig: signature, albums: missing, held: lastHeld };
+        cache.missing[artistId] = {
+          shape: CACHE_SHAPE, sig: signature, albums: missing, held: lastHeld,
+        };
         cache.ts["m:" + artistId] = Date.now();
         saveCache();
       }
@@ -929,6 +942,12 @@
 
     loadCache();
     console.log(LOG_PREFIX, `v${VERSION} ready`);
+    // Reachable from the console without opening the script manager: when a
+    // feature seems missing, the first question is always which version is
+    // actually running, and the answer should not take five minutes to get.
+    try {
+      window.ndMissingAlbums = { version: VERSION, cacheShape: CACHE_SHAPE };
+    } catch (_) {}
 
     const style = document.createElement("style");
     style.textContent = `
