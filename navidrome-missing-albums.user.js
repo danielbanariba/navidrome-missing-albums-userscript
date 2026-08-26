@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Navidrome — Show Missing Albums (MusicBrainz)
 // @namespace    https://github.com/danielbanariba/navidrome-missing-albums-userscript
-// @version      1.9.0
+// @version      1.9.1
 // @description  On an artist page, fetch the full studio discography from MusicBrainz and overlay greyed-out placeholder tiles for albums missing from your Navidrome library. Optionally request them from Lidarr.
 // @author       Daniel Banariba (@danielbanariba)
 // @match        *://*/*
@@ -825,8 +825,13 @@
       el = document.createElement("div");
       el.id = STATUS_ID;
       el.style.cssText =
-        "padding:4px 16px 12px;color:#666;font-size:12px;min-height:16px;";
-      grid.parentNode.insertBefore(el, grid);
+        "padding:8px 16px 4px;color:#666;font-size:12px;min-height:16px;";
+      // Below the grid, not above it. Navidrome has already laid the covers out
+      // by the time this runs, so anything inserted ahead of them pushes every
+      // one of them down — once is better than the three times it used to be,
+      // but nothing is better still. Adding the row after the grid extends the
+      // page instead of moving it.
+      grid.parentNode.insertBefore(el, grid.nextSibling);
     }
     return el;
   }
