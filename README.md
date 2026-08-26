@@ -2,7 +2,8 @@
 
 A userscript for [Navidrome](https://www.navidrome.org/) that overlays greyed-out
 placeholder tiles for studio albums missing from your library, sourced from
-[MusicBrainz](https://musicbrainz.org/) and [Cover Art Archive](https://coverartarchive.org/).
+[MusicBrainz](https://musicbrainz.org/) and [Cover Art Archive](https://coverartarchive.org/),
+and badges the albums you *do* have that are still sitting in a lossy format.
 
 ![Demo screenshot](https://github.com/user-attachments/assets/13dddc52-63cc-4ca0-a558-d99642812572)
 
@@ -50,6 +51,13 @@ won't trip on unrelated sites.
   visual-only with a "Not in library" badge.
 - **Year-sorted insert.** Missing tiles slot into the existing chronological
   grid order.
+- **Quality badges.** A cover whose files are lossy gets a small `MP3 192`
+  badge. Lossless copies get nothing: telling somebody their 24-bit file could
+  be improved would be noise, and untrue.
+- **One status line.** The count sits below the grid and is always present.
+  Three notices used to take turns above it — searching, the count, "you have
+  every studio album" — and each arrival and departure pushed every cover on the
+  page down and back up.
 
 ## Configuration
 
@@ -116,15 +124,42 @@ content. Set `window.__NDLB_BASE` to override.
 A `404` on the button means Lidarr has not imported that artist yet, which the
 button reports as *Monitor artist first* rather than a generic failure.
 
+### Asking for a better copy of something you already have
+
+The bridge also reports what the library *holds*, so a badged cover gets a
+**Try for lossless** button of its own. Nothing is promised by pressing it: if a
+better release turns up Lidarr replaces the file, and if it does not, the copy
+already there is untouched.
+
+Whether that button appears is a question of catalogue, not of quality. Lidarr
+needs an id to act on, and a demo or a live set its metadata profile excludes
+has none — so the badge still goes on, because knowing a record is MP3 is worth
+saying even when nothing can be done about it, and the button does not.
+
+Tiles are paired with the bridge's answer by Navidrome album id before falling
+back to titles. An id is not a spelling: MusicBrainz files Ultra Vomit's 1999
+demo as `Ultra Vomit` while the folder on disk is called `Demo`, and no amount
+of normalising makes those two strings meet.
+
+### What was requested is remembered by Lidarr, not by the browser
+
+An album already asked for shows *Requested* instead of a button. That fact is
+read from Lidarr's own `monitored` flag rather than kept in `localStorage`,
+so it survives a cleared browser and reads the same on every device — which a
+note kept in one browser's storage does not.
+
 [bridge]: https://github.com/danielbanariba/navidrome-lidarr-bridge
 
 ## Limitations
 
 - **MusicBrainz coverage.** Works best for artists with complete MusicBrainz
   release-group data. Lesser-known artists may have gaps.
-- **Name matching.** Match is by normalized title (lowercased, parens stripped,
-  punctuation removed). Heavily-renamed releases (e.g. expanded editions with
-  different titles) can produce false positives.
+- **Name matching.** Match is by normalized title — lowercased, accents folded,
+  parens stripped, punctuation removed, and the common abbreviations collapsed
+  (`M.`/`Mr`, `St.`/`Saint`, `&`/`and`), so `Mr Patate` and `M. Patate` are one
+  record. Heavily-renamed releases can still produce false positives; where the
+  bridge is present its Navidrome album id is used instead and the question does
+  not arise.
 - **MUI v4 dependent.** Targets Navidrome's current Material UI v4 grid
   classes. If/when Navidrome migrates to MUI v5+, the DOM selectors need updating.
 - **No artist disambiguation UI.** If two artists share a name, the script
