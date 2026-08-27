@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # No build step and no dependencies on purpose: the file a browser runs is
+      # the file in this repository. The tests lift the functions out of it.
+      - run: node --check navidrome-missing-albums.user.js
+      - run: node --test "tests/*.test.mjs"
+
+      - name: the version was bumped
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          before=$(git show "origin/${{ github.base_ref }}:navidrome-missing-albums.user.js" \
+                   | grep -oP '@version\s+\K\S+' | head -1)
+          after=$(grep -oP '@version\s+\K\S+' navidrome-missing-albums.user.js | head -1)
+          if git diff --quiet "origin/${{ github.base_ref }}" -- navidrome-missing-albums.user.js; then
+            echo "the userscript is unchanged"; exit 0
+          fi
+          # Tampermonkey updates by version alone. Ship a change without moving
+          # it and nobody's browser ever installs it.
+          if [ "$before" = "$after" ]; then
+            echo "the userscript changed but @version is still $after"; exit 1
+          fi
+          echo "$before -> $after"
